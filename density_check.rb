@@ -85,6 +85,7 @@ class DensityCheck
 
   private
 
+  
   def get_bit_depth_and_reference(bit_depth = 14)
     case bit_depth
     when 12
@@ -334,46 +335,79 @@ class DensityCheck
     end
   end
 
-  def print_dslr_recommendations(results)
-    puts "\n" + "DSLR SCANNING RECOMMENDATIONS".center(80, '-')
+  def analyze_scan_health(reference_white)
+    health_report = {}
     
-    status = results['overall_status']
-    
-    case status.split(' - ')[0]
-    when 'CRITICAL'
-      puts "🚨 IMMEDIATE ACTION NEEDED:"
-      puts "• Check development time/temperature - ratios suggest timing issues"
-      puts "• Verify chemical activity and mixing ratios"
-      puts "• Consider test strip development to dial in timing"
+    %w[r g b].each do |channel|
+      base_avg = @film_base_data.send(channel).avg
+      gray_avg = @gray_card_data.send(channel).avg
       
-    when 'WARNING'  
-      puts "⚠️  MONITOR CLOSELY:"
-      puts "• Development parameters slightly off target"
-      puts "• Fine-tune time/temperature on next roll"
-      puts "• Check chemical age and activity"
+      # 1. Sensor Utilization (How much of the bit-depth is used by the brightest point)
+      utilization = (base_avg / reference_white.to_f) * 100
       
-    when 'MONITOR'
-      puts "📊 MINOR ADJUSTMENTS:"
-      puts "• Overall good but some parameters could be optimized"
-      puts "• Continue current process with minor tweaks"
+      # 2. Absolute Density (D-Min / Base Fog)
+      # This measures the "thickness" of the orange mask relative to the sensor max
+      abs_density = Math.log10(reference_white / base_avg)
       
-    when 'GOOD'
-      puts "✅ EXCELLENT DEVELOPMENT:"
-      puts "• Ratios indicate proper development timing"
-      puts "• Continue current process"
-    end
+      # 3. Dynamic Range used (in EV/Stops)
+      # How much of the sensor's latitude the negative occupies
+      range_ev = Math.log2(base_avg / gray_avg)
 
-    puts "\n🔵 BLUE CHANNEL NOTES:"
-    puts "• Blue variations are normal in DSLR scanning"
-    puts "• Focus on R/G balance and contrast ratios instead"
-    puts "• Blue density absolute values are less meaningful"
-    
-    puts "\n🎯 PRIORITIES FOR DSLR C-41:"
-    puts "1. Development timing (contrast ratios)"  
-    puts "2. Cross-channel balance (R/G ratios)"
-    puts "3. Consistent chemical activity"
-    puts "4. Blue channel absolute values (lowest priority)"
+      health_report[channel] = {
+        utilization: utilization,
+        abs_density: abs_density,
+        range_ev: range_ev,
+        status: interpret_utilization(utilization)
+      }
+    end
+    health_report
   end
+
+  def interpret_utilization(pct)
+    return { label: 'CLIPPING', icon: '🚫', color: :red } if pct > 95
+    return { label: 'OPTIMAL', icon: '💎', color: :green } if pct >= 70
+    return { label: 'ACCEPTABLE', icon: '⚠️', color: :yellow } if pct >= 40
+    { label: 'THIN SCAN (NOISY)', icon: '🌑', color: :red }
+  end
+
+  def print_dslr_recommendations(results)
+  puts "\n" + "📸 SCAN QUALITY & DENSITY TELEMETRY".center(80, '-')
+  
+  health = analyze_scan_health(results['reference_white'])
+  
+  puts "%-10s %-15s %-12s %-15s %-10s" % ["Channel", "Utilization", "Abs Density", "Range (EV)", "Status"]
+  puts "-" * 80
+  
+  %w[r g b].each do |ch|
+    h = health[ch]
+    puts "%-10s %-15s %-12.2f %-15.2f %-10s %s" % [
+      ch.upcase,
+      "#{h[:utilization].round(1)}%",
+      h[:abs_density],
+      h[:range_ev],
+      h[:status][:icon],
+      h[:status][:label]
+    ]
+  end
+
+  puts "\n💡 FIXING SCAN DENSITY:"
+  
+  # Logic for specific advice
+  max_util = health.values.map { |v| v[:utilization] }.max
+  
+  if max_util < 50
+    puts "👉 YOUR SCAN IS TOO DARK: You are wasting bit-depth."
+    puts "   Action: Increase exposure (slower shutter/wider aperture) until Red or Green hits ~85%."
+  elsif max_util > 95
+    puts "👉 SCAN IS CLIPPING: You are losing film base detail."
+    puts "   Action: Decrease exposure slightly. The film base must not hit the sensor ceiling."
+  else
+    puts "✅ EXPOSURE IS SOLID: You are maximizing the signal-to-noise ratio."
+  end
+
+  puts "\n🧪 DEVELOPMENT INSIGHTS:"
+  # (Your existing development logic here...)
+end
 
   # Helper methods for CSV parsing
   def parse_raw_digger_row(row)
