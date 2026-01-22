@@ -1,0 +1,49 @@
+{
+  "FILM_DENSITY_PROFILES": {
+    "DSLR_Flexible": {
+      "gray_card_density": {
+        "r": [0.15, 0.50],
+        "g": [0.18, 0.52],
+        "b": [0.40, 1.40]
+      },
+      "base_plus_fog": {
+        "r": [0.65, 1.10],
+        "g": [0.60, 1.05],
+        "b": [0.80, 1.50]
+      },
+      "crossover_thresholds": {
+        "rg_diff": 0.20,
+        "rb_diff": 0.50,
+        "gb_diff": 0.45
+      }
+    }
+  },
+  "DSLR_REFERENCE_RATIOS": {
+    "Consumer_Films": {
+      "ratios": {
+        "gray_rg": { "target": 1.09, "tolerance": 0.25 },
+        "gray_rb": { "target": 3.34, "tolerance": 0.40 },
+        "gray_gb": { "target": 3.08, "tolerance": 0.40 },
+        "base_rg": { "target": 0.89, "tolerance": 0.20 },
+        "base_rb": { "target": 1.67, "tolerance": 0.35 },
+        "base_gb": { "target": 1.87, "tolerance": 0.35 },
+        "r_contrast": { "target": 0.51, "tolerance": 0.15 },
+        "g_contrast": { "target": 0.42, "tolerance": 0.15 },
+        "b_contrast": { "target": 0.26, "tolerance": 0.25 }
+      }
+    },
+    "Professional_Films": {
+      "ratios": {
+        "gray_rg": { "target": 1.30, "tolerance": 0.25 },
+        "gray_rb": { "target": 5.26, "tolerance": 0.50 },
+        "gray_gb": { "target": 4.05, "tolerance": 0.50 },
+        "base_rg": { "target": 0.93, "tolerance": 0.20 },
+        "base_rb": { "target": 1.54, "tolerance": 0.35 },
+        "base_gb": { "target": 1.65, "tolerance": 0.35 },
+        "r_contrast": { "target": 0.48, "tolerance": 0.15 },
+        "g_contrast": { "target": 0.35, "tolerance": 0.15 },
+        "b_contrast": { "target": 0.14, "tolerance": 0.25 }
+      }
+    }
+  }
+}
