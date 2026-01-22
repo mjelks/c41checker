@@ -6,12 +6,12 @@
 require 'csv'
 require 'json'
 require 'optparse'
-# require 'debug'
+# require 'debug' # binding.break to use breakpoints
 
 ChannelStats = Struct.new(:min_val, :max_val, :avg, :std_dev)
 MeasurementData = Struct.new(:r, :g, :b, :g2)
 
-class IntegratedDSLRC41Validator
+class DensityCheck
   SOFT_TOLERANCE = 0.05  # Increased for DSLR flexibility
   
   attr_accessor :gray_card_data, :film_base_data, :film_stock, :ratio_profile
@@ -36,7 +36,7 @@ class IntegratedDSLRC41Validator
 
   def analyze_development(bit_depth = 14)
     raise 'Both gray card and film base measurements required' unless @gray_card_data && @film_base_data
-
+    
     bit_depth, reference_white = get_bit_depth_and_reference(bit_depth)
     
     # Traditional density analysis (relaxed for DSLR)
@@ -484,7 +484,7 @@ def main
     abort("Error: CSV file required") if csv_file.nil?
     abort("❌ File not found: #{csv_file}") unless File.exist?(csv_file)
 
-    validator = IntegratedDSLRC41Validator.new(options[:profile])
+    validator = DensityCheck.new(options[:profile])
     validator.analyze_from_single_csv(csv_file, options[:profile], options[:bit_depth])
   else
     puts "DSLR C-41 Development Validator"
