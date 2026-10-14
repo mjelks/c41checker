@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'rspec'
 require 'json'
 require 'csv'
@@ -67,8 +69,8 @@ RSpec.describe DensityCheck do
     end
 
     it 'calculates correct bit depth references' do
-      results_16 = subject.analyze_development(16)
-      expect(results_16['reference_white']).to eq(65_535)
+      results16 = subject.analyze_development(16)
+      expect(results16['reference_white']).to eq(65_535)
     end
 
     it 'raises error if data is missing' do
@@ -126,16 +128,18 @@ RSpec.describe DensityCheck do
     let(:csv_path) { 'test.csv' }
     let(:csv_content) do
       [
-        ["Sample_Name", "Rmin", "Ravg", "Rmax", "Rdev", "Gmin", "Gavg", "Gmax", "Gdev", "Bmin", "Bavg", "Bmax", "Bdev", "G2min", "G2avg", "G2max", "G2dev"],
-        ["GrayCard", "600", "650", "700", "5", "500", "550", "600", "5", "100", "150", "200", "5", "500", "550", "600", "5"],
-        ["FilmBase", "2000", "2100", "2200", "10", "2200", "2300", "2400", "10", "1300", "1400", "1500", "10", "2200", "2300", "2400", "10"]
+        %w[Sample_Name Rmin Ravg Rmax Rdev Gmin Gavg Gmax Gdev Bmin Bavg Bmax Bdev G2min
+           G2avg G2max G2dev],
+        %w[GrayCard 600 650 700 5 500 550 600 5 100 150 200 5 500 550 600 5],
+        %w[FilmBase 2000 2100 2200 10 2200 2300 2400 10 1300 1400 1500 10 2200 2300
+           2400 10]
       ]
     end
 
     before do
       allow(File).to receive(:exist?).with(csv_path).and_return(true)
       allow(CSV).to receive(:read).with(csv_path, headers: true).and_return(
-        csv_content[1..-1].map { |row| CSV::Row.new(csv_content[0], row) }
+        csv_content[1..].map { |row| CSV::Row.new(csv_content[0], row) }
       )
       # Suppress puts output during tests
       allow(subject).to receive(:puts)
@@ -148,4 +152,3 @@ RSpec.describe DensityCheck do
     end
   end
 end
-
