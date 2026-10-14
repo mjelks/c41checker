@@ -850,9 +850,9 @@ end
     soft_min = target_min - soft_tolerance
     soft_max = target_max + soft_tolerance
     
-    if density >= target_min && density <= target_max
+    if density.between?(target_min, target_max)
       :pass
-    elsif density >= soft_min && density <= soft_max
+    elsif density.between?(soft_min, soft_max)
       :warning  # Within soft tolerance
     else
       :fail     # Beyond soft tolerance
@@ -870,7 +870,7 @@ end
 end
   
 def get_tolerance_status(density, target_min, target_max, soft_min, soft_max)
-  if density >= target_min && density <= target_max
+  if density.between?(target_min, target_max)
     { icon: "✅", level: :pass }
   elsif density >= soft_min && density < target_min
     { icon: "⚠️", level: :soft_under }

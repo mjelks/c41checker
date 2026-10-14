@@ -1,4 +1,6 @@
 #!/usr/bin/env ruby
+# frozen_string_literal: true
+
 # Integrated DSLR C-41 Development Validator
 # Combines flexible DSLR profiles with ratio-based analysis
 # Focus: Cross-channel issues and over/under-development detection
@@ -11,9 +13,11 @@ require 'optparse'
 ChannelStats = Struct.new(:min_val, :max_val, :avg, :std_dev)
 MeasurementData = Struct.new(:r, :g, :b, :g2)
 
+# Validates C-41 development from DSLR scans of a gray card and film base,
+# combining channel-ratio analysis (primary) with relaxed density checks (secondary).
 class DensityCheck
-  SOFT_TOLERANCE = 0.05  # Increased for DSLR flexibility
-  
+  SOFT_TOLERANCE = 0.05 # Increased for DSLR flexibility
+
   attr_accessor :gray_card_data, :film_base_data, :film_stock, :ratio_profile
 
   def initialize(ratio_profile = 'Consumer_Films', config_path = File.join(__dir__, 'profiles.json'))
@@ -21,14 +25,12 @@ class DensityCheck
     load_config(config_path)
     @gray_card_data = nil
     @film_base_data = nil
-    @film_stock = 'DSLR_Flexible'.to_sym
+    @film_stock = :DSLR_Flexible
   end
 
   def load_config(path)
-    unless File.exist?(path)
-      raise "Configuration file missing: #{path}. Please ensure profiles.json is in the root."
-    end
-    
+    raise "Configuration file missing: #{path}. Please ensure profiles.json is in the root." unless File.exist?(path)
+
     config = JSON.parse(File.read(path), symbolize_names: true)
     @density_profiles = config[:FILM_DENSITY_PROFILES]
     @reference_ratios = config[:DSLR_REFERENCE_RATIOS]
@@ -36,15 +38,15 @@ class DensityCheck
 
   def analyze_development(bit_depth = 14)
     raise 'Both gray card and film base measurements required' unless @gray_card_data && @film_base_data
-    
+
     bit_depth, reference_white = get_bit_depth_and_reference(bit_depth)
-    
+
     # Traditional density analysis (relaxed for DSLR)
     density_results = perform_density_analysis(reference_white)
-    
+
     # Ratio-based analysis (primary focus)
     ratio_results = perform_ratio_analysis
-    
+
     # Combined assessment prioritizing ratio analysis
     overall_status = determine_combined_status(density_results, ratio_results)
 
@@ -62,7 +64,7 @@ class DensityCheck
   def analyze_from_single_csv(csv_file, ratio_profile = 'Consumer_Films', bit_depth = 14)
     puts "📊 Loading DSLR scan data: #{csv_file}"
     puts "🎯 Using ratio profile: #{ratio_profile}"
-    
+
     raise "CSV file not found: #{csv_file}" unless File.exist?(csv_file)
 
     rows = CSV.read(csv_file, headers: true)
@@ -74,7 +76,7 @@ class DensityCheck
 
     puts "   Sample 1 (Gray Card): #{rows[0]['Sample_Name'] || 'Unknown'}"
     puts "   Sample 2 (Film Base): #{rows[1]['Sample_Name'] || 'Unknown'}"
-    
+
     @gray_card_data = dict_to_measurement_data(gray_data)
     @film_base_data = dict_to_measurement_data(base_data)
 
@@ -85,7 +87,6 @@ class DensityCheck
 
   private
 
-  
   def get_bit_depth_and_reference(bit_depth = 14)
     case bit_depth
     when 12
@@ -110,7 +111,7 @@ class DensityCheck
       'validation' => {},
       'notes' => []
     }
-    
+
     %w[r g b].each do |channel|
       gray_avg = @gray_card_data.send(channel).avg
       base_avg = @film_base_data.send(channel).avg
@@ -125,7 +126,7 @@ class DensityCheck
       # Validate against relaxed DSLR profile
       target_min, target_max = @density_profiles[@film_stock][:gray_card_density][channel.to_sym]
       in_range = (target_min..target_max).cover?(net_density)
-      
+
       density_results['validation'][channel] = {
         'in_spec' => in_range,
         'density' => net_density,
@@ -133,28 +134,26 @@ class DensityCheck
       }
 
       # Add notes for out-of-range values (but don't fail)
-      unless in_range
-        if net_density < target_min
-          density_results['notes'] << "#{channel.upcase} slightly under target (#{net_density.round(3)} vs #{target_min}+) - monitor development time"
-        else
-          density_results['notes'] << "#{channel.upcase} slightly over target (#{net_density.round(3)} vs #{target_max}-) - monitor development time"
-        end
-      end
+      next if in_range
+
+      side, bound = net_density < target_min ? ['under', "#{target_min}+"] : ['over', "#{target_max}-"]
+      density_results['notes'] << "#{channel.upcase} slightly #{side} target " \
+                                  "(#{net_density.round(3)} vs #{bound}) - monitor development time"
     end
     density_results
   end
 
   def perform_ratio_analysis
     # Calculate sample ratios
-    gray_data = { 
-      r: @gray_card_data.r.avg, 
-      g: @gray_card_data.g.avg, 
-      b: @gray_card_data.b.avg 
+    gray_data = {
+      r: @gray_card_data.r.avg,
+      g: @gray_card_data.g.avg,
+      b: @gray_card_data.b.avg
     }
-    base_data = { 
-      r: @film_base_data.r.avg, 
-      g: @film_base_data.g.avg, 
-      b: @film_base_data.b.avg 
+    base_data = {
+      r: @film_base_data.r.avg,
+      g: @film_base_data.g.avg,
+      b: @film_base_data.b.avg
     }
 
     sample_ratios = {
@@ -179,10 +178,10 @@ class DensityCheck
       ref_data = reference[ratio_name]
       target = ref_data[:target]
       tolerance = ref_data[:tolerance]
-      
+
       deviation = (sample_value - target).abs / target
       within_tolerance = deviation <= tolerance
-      
+
       status = if deviation <= tolerance * 0.5
                  { level: :excellent, icon: '✅', desc: 'Excellent' }
                elsif within_tolerance
@@ -208,7 +207,7 @@ class DensityCheck
         issues << "#{ratio_name.to_s.upcase.gsub('_', ' ')} ratio slightly off - monitor development"
       end
 
-      # Flag crossover issues  
+      # Flag crossover issues
       if ratio_name == :gray_rg && status[:level] == :critical
         critical_issues << "R/G ratio critical - possible crossover or development imbalance"
       elsif ratio_name == :gray_rg && status[:level] == :warning
@@ -232,10 +231,10 @@ class DensityCheck
     if critical_count >= 2
       'CRITICAL - Multiple development issues detected'
     elsif critical_count == 1
-      'WARNING - One critical ratio issue detected' 
+      'WARNING - One critical ratio issue detected'
     elsif warning_count >= 3
       'WARNING - Multiple minor issues detected'
-    elsif warning_count > 0 || density_issues > 1
+    elsif warning_count.positive? || density_issues > 1
       'MONITOR - Some parameters outside ideal range'
     else
       'GOOD - Development within expected parameters'
@@ -244,14 +243,15 @@ class DensityCheck
 
   def calculate_density(measured_value, reference_white)
     return Float::INFINITY if measured_value <= 0
+
     Math.log10(reference_white / measured_value)
   end
 
   def print_integrated_results(results)
-    puts "\n" + "="*80
+    puts "\n#{'=' * 80}"
     puts "DSLR C-41 DEVELOPMENT ANALYSIS - INTEGRATED APPROACH"
-    puts "="*80
-    
+    puts "=" * 80
+
     puts "\n📊 SCAN PARAMETERS:"
     puts "Bit Depth: #{results['bit_depth']}-bit"
     puts "Analysis Profile: #{results['ratio_profile']}"
@@ -263,30 +263,30 @@ class DensityCheck
     # Critical Issues First (most important)
     critical = results['ratio_analysis']['critical_issues']
     if critical.any?
-      puts "\n" + "CRITICAL ISSUES".center(80, '❌')
+      puts "\n#{'CRITICAL ISSUES'.center(80, '❌')}"
       critical.each { |issue| puts "❌ #{issue}" }
     end
 
     # Warnings
     warnings = results['ratio_analysis']['issues']
     if warnings.any?
-      puts "\n" + "MONITORING POINTS".center(80, '⚠')
+      puts "\n#{'MONITORING POINTS'.center(80, '⚠')}"
       warnings.each { |issue| puts "⚠️  #{issue}" }
     end
 
     # Ratio Analysis (Primary)
     print_ratio_analysis_section(results['ratio_analysis'])
-    
+
     # Density Analysis (Secondary - for reference)
     print_density_reference_section(results['density_analysis'])
-    
+
     # DSLR-specific recommendations
     print_dslr_recommendations(results)
   end
 
   def print_ratio_analysis_section(ratio_analysis)
-    puts "\n" + "RATIO ANALYSIS (PRIMARY)".center(80, '-')
-    puts "%-15s %-8s %-8s %-8s %-8s %s" % ["Ratio", "Sample", "Target", "Dev%", "Status", "Notes"]
+    puts "\n#{'RATIO ANALYSIS (PRIMARY)'.center(80, '-')}"
+    puts "Ratio           Sample   Target   Dev%     Status   Notes"
     puts "-" * 80
 
     # Group ratios by importance
@@ -296,59 +296,53 @@ class DensityCheck
 
     [
       ["🎯 DEVELOPMENT TIMING", critical_ratios],
-      ["📊 MONITORING", monitoring_ratios], 
+      ["📊 MONITORING", monitoring_ratios],
       ["📋 REFERENCE", reference_ratios]
     ].each do |section_name, ratios|
       puts "\n#{section_name}:"
       ratios.each do |ratio_name|
         next unless ratio_analysis['comparisons'][ratio_name]
-        
+
         comp = ratio_analysis['comparisons'][ratio_name]
-        puts "%-15s %-8.3f %-8.3f %-8.1f %-8s %s" % [
-          ratio_name.to_s.gsub('_', '-'),
-          comp[:sample],
-          comp[:target],
-          comp[:deviation_pct],
-          comp[:status][:icon],
-          comp[:status][:desc]
-        ]
+        puts format("%-15s %-8.3f %-8.3f %-8.1f %-8s %s", ratio_name.to_s.gsub('_', '-'), comp[:sample], comp[:target],
+                    comp[:deviation_pct], comp[:status][:icon], comp[:status][:desc])
       end
     end
   end
 
   def print_density_reference_section(density_analysis)
-    puts "\n" + "DENSITY REFERENCE (SECONDARY)".center(80, '-')
+    puts "\n#{'DENSITY REFERENCE (SECONDARY)'.center(80, '-')}"
     puts "Note: Density ranges are very relaxed for DSLR scanning"
-    
+
     %w[r g b].each do |channel|
       val = density_analysis['validation'][channel]
       density = val['density']
       range = val['target_range']
       status = val['in_spec'] ? '✅' : '📋'
-      
+
       puts "#{channel.upcase}: #{density.round(3)} (target: #{range[0]}-#{range[1]}) #{status}"
     end
 
-    if density_analysis['notes'].any?
-      puts "\nDensity Notes:"
-      density_analysis['notes'].each { |note| puts "📋 #{note}" }
-    end
+    return unless density_analysis['notes'].any?
+
+    puts "\nDensity Notes:"
+    density_analysis['notes'].each { |note| puts "📋 #{note}" }
   end
 
   def analyze_scan_health(reference_white)
     health_report = {}
-    
+
     %w[r g b].each do |channel|
       base_avg = @film_base_data.send(channel).avg
       gray_avg = @gray_card_data.send(channel).avg
-      
+
       # 1. Sensor Utilization (How much of the bit-depth is used by the brightest point)
       utilization = (base_avg / reference_white.to_f) * 100
-      
+
       # 2. Absolute Density (D-Min / Base Fog)
       # This measures the "thickness" of the orange mask relative to the sensor max
       abs_density = Math.log10(reference_white / base_avg)
-      
+
       # 3. Dynamic Range used (in EV/Stops)
       # How much of the sensor's latitude the negative occupies
       range_ev = Math.log2(base_avg / gray_avg)
@@ -367,54 +361,50 @@ class DensityCheck
     return { label: 'CLIPPING', icon: '🚫', color: :red } if pct > 95
     return { label: 'OPTIMAL', icon: '💎', color: :green } if pct >= 70
     return { label: 'ACCEPTABLE', icon: '⚠️', color: :yellow } if pct >= 40
+
     { label: 'THIN SCAN (NOISY)', icon: '🌑', color: :red }
   end
 
   def print_dslr_recommendations(results)
-  puts "\n" + "📸 SCAN QUALITY & DENSITY TELEMETRY".center(80, '-')
-  
-  health = analyze_scan_health(results['reference_white'])
-  
-  puts "%-10s %-15s %-12s %-15s %-10s" % ["Channel", "Utilization", "Abs Density", "Range (EV)", "Status"]
-  puts "-" * 80
-  
-  %w[r g b].each do |ch|
-    h = health[ch]
-    puts "%-10s %-15s %-12.2f %-15.2f %-10s %s" % [
-      ch.upcase,
-      "#{h[:utilization].round(1)}%",
-      h[:abs_density],
-      h[:range_ev],
-      h[:status][:icon],
-      h[:status][:label]
-    ]
-  end
+    puts "\n#{'📸 SCAN QUALITY & DENSITY TELEMETRY'.center(80, '-')}"
 
-  puts "\n💡 FIXING SCAN DENSITY:"
-  
-  # Logic for specific advice
-  max_util = health.values.map { |v| v[:utilization] }.max
-  
-  if max_util < 50
-    puts "👉 YOUR SCAN IS TOO DARK: You are wasting bit-depth."
-    puts "   Action: Increase exposure (slower shutter/wider aperture) until Red or Green hits ~85%."
-  elsif max_util > 95
-    puts "👉 SCAN IS CLIPPING: You are losing film base detail."
-    puts "   Action: Decrease exposure slightly. The film base must not hit the sensor ceiling."
-  else
-    puts "✅ EXPOSURE IS SOLID: You are maximizing the signal-to-noise ratio."
-  end
+    health = analyze_scan_health(results['reference_white'])
 
-  puts "\n🧪 DEVELOPMENT INSIGHTS:"
-  # (Your existing development logic here...)
-end
+    puts "Channel    Utilization     Abs Density  Range (EV)      Status    "
+    puts "-" * 80
+
+    %w[r g b].each do |ch|
+      h = health[ch]
+      puts format("%-10s %-15s %-12.2f %-15.2f %-10s %s",
+                  ch.upcase, "#{h[:utilization].round(1)}%", h[:abs_density], h[:range_ev],
+                  h[:status][:icon], h[:status][:label])
+    end
+
+    puts "\n💡 FIXING SCAN DENSITY:"
+
+    # Logic for specific advice
+    max_util = health.values.map { |v| v[:utilization] }.max
+
+    if max_util < 50
+      puts "👉 YOUR SCAN IS TOO DARK: You are wasting bit-depth."
+      puts "   Action: Increase exposure (slower shutter/wider aperture) until Red or Green hits ~85%."
+    elsif max_util > 95
+      puts "👉 SCAN IS CLIPPING: You are losing film base detail."
+      puts "   Action: Decrease exposure slightly. The film base must not hit the sensor ceiling."
+    else
+      puts "✅ EXPOSURE IS SOLID: You are maximizing the signal-to-noise ratio."
+    end
+
+    puts "\n🧪 DEVELOPMENT INSIGHTS:"
+    # (Your existing development logic here...)
+  end
 
   # Helper methods for CSV parsing
   def parse_raw_digger_row(row)
     channel_data = {}
     channels = [
       %w[r Rmin Ravg Rmax Rdev],
-      %w[g Gmin Gavg Gmax Gdev], 
+      %w[g Gmin Gavg Gmax Gdev],
       %w[b Bmin Bavg Bmax Bdev],
       %w[g2 G2min G2avg G2max G2dev]
     ]
@@ -424,7 +414,7 @@ end
 
       channel_data[channel_key] = {
         'min' => row[min_col].to_f,
-        'max' => row[max_col].to_f, 
+        'max' => row[max_col].to_f,
         'avg' => row[avg_col].to_f,
         'std_dev' => row[dev_col].to_f
       }
@@ -449,24 +439,24 @@ end
 # Test function for ProImage 100
 def test_proimage_100
   puts "🧪 Testing ProImage 100 Analysis"
-  puts "="*80
-  
+  puts "=" * 80
+
   # ProImage 100 data
   proimage_gray = { r: 671.76, g: 590.52, b: 155.98 }
   proimage_base = { r: 2125.40, g: 2354.93, b: 1430.95 }
-  
+
   puts "\n📊 RAW VALUES:"
   puts "Gray Card: R=#{proimage_gray[:r]}, G=#{proimage_gray[:g]}, B=#{proimage_gray[:b]}"
   puts "Film Base: R=#{proimage_base[:r]}, G=#{proimage_base[:g]}, B=#{proimage_base[:b]}"
-  
+
   # Calculate ratios manually for quick analysis
   gray_rg = proimage_gray[:r] / proimage_gray[:g]
-  gray_rb = proimage_gray[:r] / proimage_gray[:b] 
+  gray_rb = proimage_gray[:r] / proimage_gray[:b]
   gray_gb = proimage_gray[:g] / proimage_gray[:b]
   base_rg = proimage_base[:r] / proimage_base[:g]
   r_contrast = proimage_gray[:r] / proimage_base[:r]
   g_contrast = proimage_gray[:g] / proimage_base[:g]
-  
+
   puts "\n📈 KEY RATIOS:"
   puts "Gray R/G: #{gray_rg.round(3)} (Consumer target: ~1.09, Pro target: ~1.30)"
   puts "Gray R/B: #{gray_rb.round(3)} (Consumer target: ~3.34, Pro target: ~5.26)"
@@ -474,25 +464,25 @@ def test_proimage_100
   puts "Base R/G: #{base_rg.round(3)} (Consumer target: ~0.89, Pro target: ~0.93)"
   puts "R Contrast: #{r_contrast.round(3)} (Consumer target: ~0.51, Pro target: ~0.48)"
   puts "G Contrast: #{g_contrast.round(3)} (Consumer target: ~0.42, Pro target: ~0.35)"
-  
+
   puts "\n🎯 PROFILE RECOMMENDATION:"
   if gray_rg < 1.2 && gray_rb < 4.5 && r_contrast > 0.45
     puts "✅ Use Consumer_Films profile - ProImage behaves like consumer film"
   else
     puts "📊 Use Professional_Films profile - ProImage shows pro film characteristics"
   end
-  
+
   puts "\n🔵 BLUE CHANNEL ANALYSIS:"
   blue_raw_ratio = proimage_gray[:b] / ((proimage_gray[:r] + proimage_gray[:g]) / 2.0)
-  puts "Blue vs R/G average: #{(blue_raw_ratio * 100).round(1)}% (#{(-Math.log2(1/blue_raw_ratio)).round(1)} EV deficit)"
-  
+  puts "Blue vs R/G average: #{(blue_raw_ratio * 100).round(1)}% (#{(-Math.log2(1 / blue_raw_ratio)).round(1)} EV deficit)"
+
   if blue_raw_ratio < 0.3
     puts "⚠️  Significant blue underexposure - typical for DSLR scanning"
   else
     puts "✅ Blue exposure reasonable for DSLR scanning"
   end
-  
-  puts "\n" + "="*80
+
+  puts "\n#{'=' * 80}"
 end
 
 # Command line interface
@@ -527,11 +517,9 @@ def main
     puts "\nTest Functions:"
     puts "• Run 'test_proimage_100' to analyze ProImage 100 characteristics"
   end
-  
+
   # Quick test for ProImage 100 if requested
-  if ARGV.include?('test_proimage')
-    test_proimage_100
-  end
+  test_proimage_100 if ARGV.include?('test_proimage')
 rescue StandardError => e
   puts "Error: #{e.message}"
   exit(1)

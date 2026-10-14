@@ -481,7 +481,7 @@ class C41Validator
 
   def print_density_analysis(results)
     puts "\n#{'GRAY CARD DENSITY ANALYSIS'.center(70, '-')}"
-    puts format('%-8s %-8s %-15s %-8s %s', 'Channel', 'Density', 'Target Range', 'Status', 'Notes')
+    puts 'Channel  Density  Target Range    Status   Notes'
     puts '-' * 70
 
     %w[r g b].each do |channel|
@@ -506,7 +506,7 @@ class C41Validator
     end
 
     puts "\n#{'BASE + FOG ANALYSIS'.center(70, '-')}"
-    puts format('%-8s %-8s %-15s %-8s %s', 'Channel', 'Density', 'Target Range', 'Status', 'Notes')
+    puts 'Channel  Density  Target Range    Status   Notes'
     puts '-' * 70
 
     %w[r g b].each do |channel|
@@ -759,9 +759,9 @@ class C41Validator
       soft_min = target_min - soft_tolerance
       soft_max = target_max + soft_tolerance
 
-      if density >= target_min && density <= target_max
+      if density.between?(target_min, target_max)
         :pass
-      elsif density >= soft_min && density <= soft_max
+      elsif density.between?(soft_min, soft_max)
         :warning  # Within soft tolerance
       else
         :fail     # Beyond soft tolerance
@@ -779,7 +779,7 @@ class C41Validator
   end
 
   def get_tolerance_status(density, target_min, target_max, soft_min, soft_max)
-    if density >= target_min && density <= target_max
+    if density.between?(target_min, target_max)
       { icon: '✅', level: :pass }
     elsif density >= soft_min && density < target_min
       { icon: '⚠️', level: :soft_under }
@@ -871,7 +871,7 @@ def test_your_measurements
   puts "="*70
   analyze_from_data(gray_data, base_data, 'Gold')
 
-  puts "\n" + "="*70
+  puts "\n" + ("="*70)
   puts "\nTesting with DSLR-optimized profile:"
   puts "="*70
   analyze_from_data(gray_data, base_data, 'DSLR_Generic')

@@ -5,6 +5,8 @@ inherit_from: .rubocop_todo.yml
 # Use PascalCase for the department name
 AllCops:
   TargetRubyVersion: 3.1
+  # Opt in to cops added in newer RuboCop versions instead of getting a pending-cops warning
+  NewCops: enable
   # This ensures the samples folder is never touched by the linter
   Exclude:
     - 'samples/**/*'
@@ -14,16 +16,16 @@ AllCops:
 Metrics/MethodLength:
   Max: 100
   Exclude:
-    - 'test_proimage_100' # High density of puts statements
+    - 'legacy-scripts/**/*' # Old scripts kept for reference, not maintained
 
 # High complexity is expected for the ratio calculation logic
 Metrics/AbcSize:
-  Max: 60
+  Max: 75
 
 # Allow the long OptionParser block in main
 Metrics/BlockLength:
   Exclude:
-    - 'abc.rb'
+    - 'spec/**/*'
 
 # Relaxing string literals since you use both single and double quotes
 Style/StringLiterals:
@@ -32,3 +34,12 @@ Style/StringLiterals:
 # Your script uses some long descriptive lines for console output
 Layout/LineLength:
   Max: 130
+
+# Keyword arguments are optional named flags, not positional clutter
+Metrics/ParameterLists:
+  CountKeywordArgs: false
+
+# test_proimage_100 is the name of a CLI test function (ProImage 100 film stock)
+Naming/VariableNumber:
+  AllowedIdentifiers:
+    - test_proimage_100
