@@ -13,6 +13,8 @@
 # Used by dotenv library to load environment variables.
 # .env
 
+.byebug_history
+
 # Ignore Byebug command history file.
 .byebug_history
 
@@ -54,3 +56,10 @@ build-iPhoneSimulator/
 
 # Used by RuboCop. Remote config files pulled in from inherit_from directive.
 # .rubocop-https?--*
+
+# Personal CSV samples, not checked in
+/samples/local-spot-checks/
+
+# Local replenishment tracking history and reports
+replenishment_history.json
+replenishment_report.txt

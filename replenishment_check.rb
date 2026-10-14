@@ -1,0 +1,668 @@
+#!/usr/bin/env ruby
+# Replenishment Health Checker for C-41
+# Detects chemistry degradation and crossover issues across multiple rolls
+
+# Add a new roll to tracking
+# ruby replenishment_check.rb add my_scan.csv --rolls 42 --film "Ultramax 400" --dev dev0937 --gray pavement
+# (--gray is card|pavement|other; you'll be prompted if omitted)
+# (trends are only computed between rolls sharing the same --dev tag)
+
+# Analyze current chemistry health
+# ruby replenishment_check.rb analyze
+
+# View trend plots
+# ruby replenishment_check.rb plot
+
+# Generate full report
+# ruby replenishment_check.rb report
+
+require 'csv'
+require 'json'
+require 'date'
+
+class ReplenishmentCheck
+  # Thresholds for detecting chemistry issues
+  CROSSOVER_WARNING = 0.03    # 3% shift in R/G ratio = early warning
+  CROSSOVER_CRITICAL = 0.05   # 5% shift = serious crossover
+  CONTRAST_DRIFT_WARNING = 0.04   # 4% loss in contrast
+  BLUE_DRIFT_WARNING = 0.08   # 8% shift in blue behavior
+
+  # How many prior rolls (same dev batch) feed the rolling-median reference
+  REFERENCE_WINDOW = 5
+
+  # Film-base-only ratios don't depend on the gray target, so they are the
+  # primary trend signal. gray_* and *_contrast are secondary.
+  BASE_KEYS = %w[base_rg base_rb base_gb].freeze
+
+  # Matches density_check's THIN SCAN cutoff (film base utilization, percent)
+  THIN_SCAN_UTILIZATION = 40.0
+
+  BASE_LABELS = { 'base_rg' => 'base R/G', 'base_rb' => 'base R/B', 'base_gb' => 'base G/B' }.freeze
+
+  GRAY_TARGETS = {
+    '1' => 'card', 'card' => 'card',
+    '2' => 'pavement', 'pavement' => 'pavement',
+    '3' => 'other', 'other' => 'other'
+  }.freeze
+  GRAY_LABELS = {
+    'card' => '18% gray card',
+    'pavement' => 'pavement/concrete',
+    'other' => 'other/non-standard target',
+    'unknown' => 'unknown'
+  }.freeze
+
+  attr_reader :history_file, :baseline
+
+  def initialize(history_file = 'replenishment_history.json')
+    @history_file = history_file
+    @history = load_history
+    @baseline = calculate_baseline
+  end
+
+  def load_history
+    return [] unless File.exist?(@history_file)
+    JSON.parse(File.read(@history_file))
+  rescue JSON::ParserError
+    puts "⚠️  Warning: Could not parse history file, starting fresh"
+    []
+  end
+
+  def save_history
+    File.write(@history_file, JSON.pretty_generate(@history))
+  end
+
+  def add_roll(csv_file, rolls_since_mix: nil, film_type: 'consumer', notes: '', dev: nil, gray_target: nil)
+    require_relative 'density_check' # Load the main validator
+
+    gray_target = resolve_gray_target(gray_target)
+
+    # Run standard analysis
+    validator = DensityCheck.new
+    results = validator.analyze_from_single_csv(csv_file, 'Consumer_Films', 12)
+
+    # Extract key metrics for tracking
+    entry = {
+      'date' => Time.now.strftime('%Y-%m-%d %H:%M'),
+      'rolls_since_mix' => rolls_since_mix,
+      'film_type' => film_type,
+      'dev' => dev,
+      'gray_target' => gray_target,
+      'csv_file' => csv_file,
+      'notes' => notes,
+      'metrics' => extract_key_metrics(results),
+      'targets' => extract_target_status(results),
+      'scan' => extract_scan_health(validator, results)
+    }
+
+    @history << entry
+    save_history
+    @baseline = calculate_baseline
+
+    puts "\n✅ Roll added to replenishment history (#{@history.length} total rolls tracked)"
+    puts "🎯 Gray target recorded: #{GRAY_LABELS[gray_target]}"
+    if gray_target != 'card'
+      puts "   Gray-derived metrics (gray_*, contrasts, blue) will be treated as low confidence."
+      puts "   Film-base ratios drive the crossover verdict."
+    end
+
+    # Analyze if we have enough data in this dev batch
+    analyze_replenishment_health if batch_history.length >= 2
+
+    entry
+  end
+
+  def extract_key_metrics(results)
+    ratios = results['ratio_analysis']['sample_ratios']
+
+    {
+      # Film-base ratios: independent of the gray target (primary signal)
+      'base_rg' => ratios[:base_rg],
+      'base_rb' => ratios[:base_rb],
+      'base_gb' => ratios[:base_gb],
+
+      # Gray-derived ratios (secondary, depend on gray target quality)
+      'gray_rg' => ratios[:gray_rg],
+      'gray_rb' => ratios[:gray_rb],
+      'gray_gb' => ratios[:gray_gb],
+
+      # Development strength indicators (gray / base)
+      'r_contrast' => ratios[:r_contrast],
+      'g_contrast' => ratios[:g_contrast],
+      'b_contrast' => ratios[:b_contrast],
+
+      # Timestamp for trend analysis
+      'timestamp' => Time.now.to_i
+    }
+  end
+
+  # How each ratio compares to its profile target (level + deviation), so
+  # shifts can be judged against "where it should be", not only "where it was".
+  def extract_target_status(results)
+    results['ratio_analysis']['comparisons'].each_with_object({}) do |(name, comp), out|
+      out[name.to_s] = {
+        'level' => comp[:status][:level].to_s,
+        'deviation_pct' => comp[:deviation_pct]
+      }
+    end
+  end
+
+  # Film base utilization per channel; thin scans give unreliable ratios.
+  def extract_scan_health(validator, results)
+    reference_white = results['reference_white'].to_f
+    util = %w[r g b].each_with_object({}) do |channel, out|
+      out[channel] = (validator.film_base_data.send(channel).avg / reference_white * 100).round(1)
+    end
+    { 'utilization' => util, 'thin' => util['r'] < THIN_SCAN_UTILIZATION || util['g'] < THIN_SCAN_UTILIZATION }
+  end
+
+  # Rolls belonging to the same developer batch as the most recent roll.
+  # Mixing batches would compare unrelated chemistry.
+  def batch_history
+    return [] if @history.empty?
+    dev = @history.last['dev']
+    @history.select { |r| r['dev'] == dev }
+  end
+
+  def thin_scan?(roll)
+    roll.dig('scan', 'thin') ? true : false
+  end
+
+  # Batch rolls whose scans are good enough to trust
+  def usable_batch
+    batch_history.reject { |r| thin_scan?(r) }
+  end
+
+  # Median of each metric over the last REFERENCE_WINDOW rolls given, so a
+  # single bad sample doesn't trigger a false alarm.
+  def rolling_reference(rolls)
+    prior = rolls.last(REFERENCE_WINDOW).map { |r| r['metrics'] }
+    keys = prior.flat_map(&:keys).uniq - ['timestamp']
+    keys.each_with_object({}) do |key, ref|
+      values = prior.map { |m| m[key] }.compact
+      ref[key] = median(values) unless values.empty?
+    end
+  end
+
+  def calculate_baseline
+    batch = usable_batch
+    return nil if batch.length < 3
+
+    # Use first 3-5 usable rolls of the batch as baseline (assuming fresh chemistry)
+    metrics = batch.first([5, batch.length].min).map { |r| r['metrics'] }
+
+    keys = BASE_KEYS + %w[gray_rg gray_rb r_contrast g_contrast b_contrast]
+    keys.each_with_object({}) do |key, base|
+      values = metrics.map { |m| m[key] }.compact
+      base[key] = avg(values) unless values.empty?
+    end
+  end
+
+  def analyze_replenishment_health
+    puts "\n" + "="*80
+    puts "🧪 REPLENISHMENT HEALTH ANALYSIS"
+    puts "="*80
+
+    batch = batch_history
+    if batch.length < 2
+      puts "⚠️  Need at least 2 rolls in the same dev batch to analyze trends"
+      return
+    end
+
+    latest_roll = batch.last
+    gray_target = latest_roll['gray_target'] || 'unknown'
+
+    puts "\n📊 ROLLS TRACKED: #{@history.length}"
+    puts "Dev batch: #{latest_roll['dev'] || '(untagged)'} (#{batch.length} rolls)"
+    puts "Latest roll: #{latest_roll['date']}"
+    puts "Rolls since fresh mix: #{latest_roll['rolls_since_mix']}" if latest_roll['rolls_since_mix']
+    puts "Gray target: #{GRAY_LABELS[gray_target]}"
+    print_scan_line(latest_roll)
+
+    if thin_scan?(latest_roll)
+      puts "\n🌑 Latest scan is THIN (film base < #{THIN_SCAN_UTILIZATION.round}% in R or G)."
+      puts "   Ratios from thin scans are noisy, so no comparison was made. Rescan with more exposure."
+      return
+    end
+
+    prior = usable_batch[0...-1]
+    skipped = batch.length - 1 - prior.length
+    puts "(#{skipped} earlier thin-scan roll#{'s' if skipped != 1} excluded from the reference)" if skipped > 0
+    if prior.empty?
+      puts "\n⚠️  No earlier usable rolls in this dev batch to compare against"
+      return
+    end
+
+    # Compare latest roll to the rolling median of earlier usable rolls
+    latest = latest_roll['metrics']
+    previous = rolling_reference(prior)
+    targets = latest_roll['targets'] || {}
+    low_confidence = gray_target != 'card'
+
+    puts "Reference: median of previous #{[prior.length, REFERENCE_WINDOW].min} usable roll#{'s' if prior.length != 1}"
+    mixed = prior.last(REFERENCE_WINDOW).map { |r| r['gray_target'] || 'unknown' }.uniq - [gray_target]
+    if mixed.any?
+      puts "⚠️  Reference mixes gray targets (#{mixed.map { |g| GRAY_LABELS[g] }.join(', ')}); gray-derived comparisons are less reliable"
+    end
+
+    # Primary: film-base ratios (independent of gray target)
+    base_status = detect_base_crossover(latest, previous, targets)
+
+    # Secondary: gray-derived
+    gray_status = detect_gray_rg_shift(latest, previous, targets, low_confidence)
+    contrast_status = detect_contrast_loss(latest, previous, targets, low_confidence)
+    blue_status = detect_blue_drift(latest, previous, targets, base_status, low_confidence)
+
+    statuses = [base_status, gray_status, contrast_status, blue_status]
+    print_overall_assessment(statuses)
+
+    # Long-term trend analysis if we have baseline
+    print_trend_analysis if @baseline && usable_batch.length >= 5
+
+    print_recommendations(base_status, gray_status, contrast_status, blue_status)
+  end
+
+  # Film-base R/G, R/B, G/B shift. This is the crossover signal that doesn't
+  # rely on the gray target. A shift only escalates if the latest base ratio
+  # is itself off its profile target.
+  def detect_base_crossover(latest, previous, targets)
+    shifts = BASE_KEYS.each_with_object({}) do |key, out|
+      next unless latest[key] && previous[key]
+      out[key] = (latest[key] - previous[key]) / previous[key]
+    end
+
+    status = {
+      'shift_pct' => shifts.transform_values { |v| v * 100 },
+      'level' => :good
+    }
+
+    if shifts.empty?
+      status['level'] = :info
+      status['message'] = "📊 INFO: No film-base data in reference rolls (re-add rolls to track base ratios)"
+      return status
+    end
+
+    key, shift = shifts.max_by { |_, v| v.abs }
+    label = BASE_LABELS[key]
+    magnitude = shift.abs
+
+    if magnitude > CROSSOVER_WARNING
+      if off_target?(targets, key)
+        status['level'] = magnitude > CROSSOVER_CRITICAL ? :critical : :warning
+        status['message'] = if status['level'] == :critical
+                              "❌ CRITICAL: Film-base #{label} shifted #{'%+.1f' % (shift * 100)}% #{target_phrase(targets)} - possible crossover"
+                            else
+                              "⚠️  WARNING: Film-base #{label} shifted #{'%+.1f' % (shift * 100)}% #{target_phrase(targets)} - monitor for crossover"
+                            end
+      else
+        status['level'] = :info
+        status['message'] = "📊 INFO: Film-base #{label} shifted #{'%+.1f' % (shift * 100)}% but is still within target (likely scan/light variation)"
+      end
+    else
+      status['message'] = "✅ GOOD: Film-base ratios stable"
+    end
+
+    status
+  end
+
+  def detect_gray_rg_shift(latest, previous, targets, low_confidence)
+    shift = (latest['gray_rg'] - previous['gray_rg']) / previous['gray_rg']
+
+    status = { 'gray_rg_shift_pct' => shift * 100, 'level' => :good }
+
+    if shift.abs > CROSSOVER_WARNING
+      if off_target?(targets, 'gray_rg')
+        status['level'] = :warning
+        status['message'] = "⚠️  WARNING: Gray R/G shifted #{'%+.1f' % (shift * 100)}% #{target_phrase(targets)}#{confidence_note(low_confidence)}"
+      else
+        status['level'] = :info
+        status['message'] = "📊 INFO: Gray R/G shifted #{'%+.1f' % (shift * 100)}% but is still within target#{confidence_note(low_confidence)}"
+      end
+    else
+      status['message'] = "✅ GOOD: Gray R/G stable"
+    end
+
+    status
+  end
+
+  def detect_contrast_loss(latest, previous, targets, low_confidence)
+    # Development strength = density difference between gray and base
+    r_loss = ((previous['r_contrast'] - latest['r_contrast']) / previous['r_contrast'])
+    g_loss = ((previous['g_contrast'] - latest['g_contrast']) / previous['g_contrast'])
+
+    avg_loss = (r_loss + g_loss) / 2.0
+
+    status = {
+      'r_contrast_change_pct' => r_loss * 100,
+      'g_contrast_change_pct' => g_loss * 100,
+      'avg_loss_pct' => avg_loss * 100,
+      'level' => :good
+    }
+
+    if avg_loss > CONTRAST_DRIFT_WARNING
+      if off_target?(targets, 'r_contrast', 'g_contrast')
+        status['level'] = :warning
+        status['message'] = "⚠️  WARNING: Development strength declining - check replenishment rate#{confidence_note(low_confidence)}"
+      else
+        status['level'] = :info
+        status['message'] = "📊 INFO: Contrast down #{'%.1f' % (avg_loss * 100)}% but still within target#{confidence_note(low_confidence)}"
+      end
+    elsif avg_loss < -0.03
+      status['level'] = :info
+      status['message'] = "📊 INFO: Development strength increasing slightly"
+    else
+      status['message'] = "✅ GOOD: Development strength stable"
+    end
+
+    status
+  end
+
+  # Blue contrast is the weakest, noisiest channel and leans hardest on the
+  # gray target, so it is informational unless the gray target is a real card
+  # or the film base corroborates the drift.
+  def detect_blue_drift(latest, previous, targets, base_status, low_confidence)
+    b_contrast_change = ((latest['b_contrast'] - previous['b_contrast']) / previous['b_contrast'])
+
+    status = { 'b_contrast_change_pct' => b_contrast_change * 100, 'level' => :good }
+
+    if b_contrast_change.abs > BLUE_DRIFT_WARNING
+      corroborated = [:warning, :critical].include?(base_status['level'])
+      if (corroborated || !low_confidence) && off_target?(targets, 'b_contrast')
+        status['level'] = :warning
+        status['message'] = "⚠️  WARNING: Blue channel behavior changing (#{'%+.1f' % (b_contrast_change * 100)}%) - possible oxidation"
+      else
+        status['level'] = :info
+        status['message'] = "📊 INFO: Blue contrast moved #{'%+.1f' % (b_contrast_change * 100)}% - informational only (not corroborated by film base#{low_confidence ? ', gray target is not a card' : ''})"
+      end
+    else
+      status['message'] = "✅ GOOD: Blue channel stable"
+    end
+
+    status
+  end
+
+  def print_overall_assessment(statuses)
+    puts "\n🎯 OVERALL CHEMISTRY STATUS:"
+    statuses.each { |s| puts s['message'] }
+
+    # Determine if chemistry needs attention (info-level items don't count)
+    critical_count = statuses.count { |s| s['level'] == :critical }
+    warning_count = statuses.count { |s| s['level'] == :warning }
+
+    puts "\n" + "="*80
+    if critical_count > 0
+      puts "🚨 ACTION REQUIRED: Chemistry showing critical degradation"
+    elsif warning_count >= 2
+      puts "⚠️  MONITOR CLOSELY: Multiple warning signs detected"
+    elsif warning_count == 1
+      puts "📊 MONITOR: One parameter trending outside normal range"
+    else
+      puts "✅ CHEMISTRY HEALTHY: No parameters off target and drifting"
+    end
+    puts "="*80
+  end
+
+  def print_trend_analysis
+    puts "\n📈 LONG-TERM TREND ANALYSIS:"
+    puts "Baseline (first 3-5 usable rolls) vs Latest roll:"
+    puts "-" * 80
+
+    latest = batch_history.last['metrics']
+
+    [
+      ['Base R/G', 'base_rg', CROSSOVER_WARNING],
+      ['Base R/B', 'base_rb', CROSSOVER_WARNING],
+      ['Base G/B', 'base_gb', CROSSOVER_WARNING],
+      ['R/G Ratio (Gray)*', 'gray_rg', CROSSOVER_WARNING],
+      ['R Contrast*', 'r_contrast', CONTRAST_DRIFT_WARNING],
+      ['G Contrast*', 'g_contrast', CONTRAST_DRIFT_WARNING],
+      ['B Contrast*', 'b_contrast', BLUE_DRIFT_WARNING]
+    ].each do |label, key, threshold|
+      baseline_val = @baseline[key]
+      latest_val = latest[key]
+      next unless baseline_val && latest_val
+      drift_pct = ((latest_val - baseline_val) / baseline_val).abs * 100
+
+      icon = drift_pct > (threshold * 100) ? '⚠️' : '✅'
+
+      puts "%-25s Baseline: %.3f  Latest: %.3f  Drift: %.1f%% %s" %
+        [label, baseline_val, latest_val, drift_pct, icon]
+    end
+    puts "* gray-derived, depends on gray target quality"
+  end
+
+  def print_recommendations(base, gray, contrast, blue)
+    puts "\n💡 RECOMMENDATIONS:"
+    puts "-" * 80
+
+    if base['level'] == :critical
+      puts "❌ CROSSOVER DETECTED:"
+      puts "   • Increase replenishment rate to 25-30ml per roll"
+      puts "   • Check developer tank for air exposure"
+      puts "   • Consider mixing fresh chemistry if >50 rolls processed"
+      puts "   • Verify replenisher is fresh (not oxidized)"
+    elsif base['level'] == :warning
+      puts "⚠️  EARLY CROSSOVER WARNING:"
+      puts "   • Monitor next 2-3 rolls closely"
+      puts "   • Ensure proper tank sealing between sessions"
+      puts "   • Consider increasing replenishment to 25ml/roll"
+    end
+
+    if contrast['level'] == :warning
+      puts "\n⚠️  DEVELOPMENT STRENGTH DECLINING:"
+      puts "   • Verify replenishment rate (should be 20-30ml/roll)"
+      puts "   • Check developer temperature consistency"
+      puts "   • Ensure replenisher is properly mixed"
+    end
+
+    if blue['level'] == :warning
+      puts "\n⚠️  BLUE CHANNEL DRIFT (OXIDATION):"
+      puts "   • Minimize air exposure in storage"
+      puts "   • Check floating lid or nitrogen blanket"
+      puts "   • Fresh chemistry may be needed soon"
+    end
+
+    if gray['level'] == :warning
+      puts "\n⚠️  GRAY R/G OFF TARGET:"
+      puts "   • Re-sample the gray target (same light, same spot) before acting on this"
+    end
+
+    all = [base, gray, contrast, blue]
+    if all.none? { |s| [:warning, :critical].include?(s['level']) }
+      puts "✅ No action needed - chemistry is performing well"
+      puts "   • Current replenishment rate appears adequate"
+      puts "   • Continue monitoring every 3-5 rolls"
+      if all.any? { |s| s['level'] == :info }
+        puts "   • Info items above are shifts that stayed within target or lacked corroboration"
+      end
+    end
+  end
+
+  def plot_trends
+    batch = usable_batch
+    return unless batch.length >= 5
+
+    key = 'base_rg'
+    batch = batch.select { |r| r['metrics'][key] }
+    return unless batch.length >= 5
+
+    puts "\n📊 RATIO TREND PLOT (dev #{batch.last['dev'] || 'untagged'}, last #{[batch.length, 10].min} usable rolls):"
+    puts "-" * 80
+
+    recent = batch.last(10)
+
+    # Simple ASCII bar chart for film-base R/G (independent of gray target)
+    values = recent.map { |r| r['metrics'][key] }
+    min_val = values.min
+    max_val = values.max
+    range = max_val - min_val
+
+    puts "Film base R/G Ratio (#{min_val.round(3)} to #{max_val.round(3)}):"
+
+    values.each_with_index do |val, idx|
+      roll_num = batch.length - recent.length + idx + 1
+      normalized = range > 0 ? ((val - min_val) / range * 40).round : 20
+      bar = '█' * normalized
+      puts "Roll %2d: %s %.3f" % [roll_num, bar, val]
+    end
+  end
+
+  def generate_report(output_file = 'replenishment_report.txt')
+    File.open(output_file, 'w') do |f|
+      f.puts "C-41 REPLENISHMENT HEALTH REPORT"
+      f.puts "Generated: #{Time.now.strftime('%Y-%m-%d %H:%M')}"
+      f.puts "="*80
+      f.puts "\nROLLS TRACKED: #{@history.length}"
+
+      if @baseline
+        f.puts "\nBASELINE METRICS (first 3-5 usable rolls):"
+        @baseline.each { |k, v| f.puts "  #{k}: #{v.round(3)}" }
+      end
+
+      f.puts "\nRECENT HISTORY:"
+      recent = @history.last(10)
+      recent.each_with_index do |roll, idx|
+        f.puts "\n--- Roll #{@history.length - recent.length + idx + 1} ---"
+        f.puts "Date: #{roll['date']}"
+        f.puts "Dev: #{roll['dev']}" if roll['dev']
+        f.puts "Film: #{roll['film_type']}"
+        f.puts "Gray target: #{GRAY_LABELS[roll['gray_target'] || 'unknown']}"
+        f.puts "Scan: THIN" if thin_scan?(roll)
+        roll['metrics'].each { |k, v| f.puts "  #{k}: #{v.round(3)}" }
+      end
+    end
+
+    puts "\n📄 Report saved to: #{output_file}"
+  end
+
+  private
+
+  def resolve_gray_target(value)
+    if value
+      return GRAY_TARGETS.fetch(value.to_s.downcase) do
+        abort("Error: --gray must be one of: card, pavement, other")
+      end
+    end
+
+    # Non-interactive runs (pipes, cron) can't be asked
+    return 'unknown' unless $stdin.tty?
+
+    last_used = @history.reverse.map { |r| r['gray_target'] }.find { |g| g && g != 'unknown' }
+    prompt_gray_target(last_used)
+  end
+
+  def prompt_gray_target(default)
+    puts "\n🎯 What did you sample as the gray target for this roll?"
+    puts "   1) 18% gray card"
+    puts "   2) pavement / concrete"
+    puts "   3) other / not sure"
+    default_choice = { 'card' => '1', 'pavement' => '2', 'other' => '3' }[default]
+    print default_choice ? "Choice [#{default_choice}]: " : "Choice: "
+
+    answer = $stdin.gets.to_s.strip
+    answer = default_choice.to_s if answer.empty?
+
+    target = GRAY_TARGETS[answer.downcase]
+    unless target
+      puts "Unrecognized answer, recording as 'other'"
+      target = 'other'
+    end
+    target
+  end
+
+  def print_scan_line(roll)
+    util = roll.dig('scan', 'utilization')
+    return unless util
+    puts "Scan exposure (film base): R #{util['r']}%  G #{util['g']}%  B #{util['b']}%#{'  🌑 THIN' if thin_scan?(roll)}"
+  end
+
+  # True when the latest value for any given ratio is outside tolerance.
+  # With no target data (older history entries) don't suppress anything.
+  def off_target?(targets, *keys)
+    known = keys.map { |k| targets[k] }.compact
+    return true if known.empty?
+    known.any? { |t| %w[warning critical].include?(t['level']) }
+  end
+
+  def target_phrase(targets)
+    targets.empty? ? '(no target data for this roll)' : 'and is off target'
+  end
+
+  def confidence_note(low_confidence)
+    low_confidence ? ' (low confidence: gray target is not a card)' : ''
+  end
+
+  def avg(array)
+    array.sum / array.length.to_f
+  end
+
+  def median(array)
+    sorted = array.sort
+    mid = sorted.length / 2
+    sorted.length.odd? ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0
+  end
+end
+
+# Command line interface
+def main
+  if ARGV.empty?
+    puts "C-41 Replenishment Health Checker"
+    puts "\nUsage:"
+    puts "  ruby replenishment_check.rb add <csv_file> [--rolls N] [--film TYPE] [--dev TAG] [--gray card|pavement|other] [--notes 'text']"
+    puts "  ruby replenishment_check.rb analyze"
+    puts "  ruby replenishment_check.rb report"
+    puts "  ruby replenishment_check.rb plot"
+    puts "\nExample:"
+    puts "  ruby replenishment_check.rb add roll_042.csv --rolls 42 --film 'Ultramax 400' --dev dev0937 --gray pavement"
+    exit
+  end
+  
+  command = ARGV.shift
+  checker = ReplenishmentCheck.new
+  
+  case command
+  when 'add'
+    csv_file = ARGV.shift
+    abort("Error: CSV file required") unless csv_file
+    abort("Error: File not found: #{csv_file}") unless File.exist?(csv_file)
+    
+    options = { rolls_since_mix: nil, film_type: 'consumer', notes: '', dev: nil, gray_target: nil }
+    
+    # Parse options
+    while ARGV.any?
+      case ARGV.shift
+      when '--rolls'
+        options[:rolls_since_mix] = ARGV.shift.to_i
+      when '--film'
+        options[:film_type] = ARGV.shift
+      when '--dev'
+        options[:dev] = ARGV.shift
+      when '--gray'
+        options[:gray_target] = ARGV.shift
+      when '--notes'
+        options[:notes] = ARGV.shift
+      end
+    end
+    
+    checker.add_roll(csv_file, **options)
+    
+  when 'analyze'
+    checker.analyze_replenishment_health
+    
+  when 'plot'
+    checker.plot_trends
+    
+  when 'report'
+    checker.generate_report
+    
+  else
+    puts "Unknown command: #{command}"
+    puts "Use: add, analyze, plot, or report"
+  end
+  
+rescue StandardError => e
+  puts "❌ Error: #{e.message}"
+  puts e.backtrace if ENV['DEBUG']
+  exit(1)
+end
+
+main if __FILE__ == $PROGRAM_NAME

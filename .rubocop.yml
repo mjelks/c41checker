@@ -1,0 +1,34 @@
+inherit_from: .rubocop_todo.yml
+
+# inherit_from: .rubocop_todo.yml # Optional: if you generate a todo list
+
+# Use PascalCase for the department name
+AllCops:
+  TargetRubyVersion: 3.1
+  # This ensures the samples folder is never touched by the linter
+  Exclude:
+    - 'samples/**/*'
+    - 'vendor/**/*'
+
+# Since your script uses large data hashes for film profiles
+Metrics/MethodLength:
+  Max: 100
+  Exclude:
+    - 'test_proimage_100' # High density of puts statements
+
+# High complexity is expected for the ratio calculation logic
+Metrics/AbcSize:
+  Max: 60
+
+# Allow the long OptionParser block in main
+Metrics/BlockLength:
+  Exclude:
+    - 'abc.rb'
+
+# Relaxing string literals since you use both single and double quotes
+Style/StringLiterals:
+  Enabled: false
+
+# Your script uses some long descriptive lines for console output
+Layout/LineLength:
+  Max: 130

@@ -6,79 +6,37 @@
 require 'csv'
 require 'json'
 require 'optparse'
+# require 'debug' # binding.break to use breakpoints
 
 ChannelStats = Struct.new(:min_val, :max_val, :avg, :std_dev)
 MeasurementData = Struct.new(:r, :g, :b, :g2)
 
-class IntegratedDSLRC41Validator
+class DensityCheck
   SOFT_TOLERANCE = 0.05  # Increased for DSLR flexibility
   
-  # DSLR-optimized profiles with relaxed absolute ranges
-  FILM_DENSITY_PROFILES = {
-    'DSLR_Flexible' => {
-      gray_card_density: {
-        'r' => [0.15, 0.50],      # Very wide range
-        'g' => [0.18, 0.52],      # Very wide range  
-        'b' => [0.40, 1.40]       # Extremely wide for blue variations
-      },
-      base_plus_fog: {
-        'r' => [0.65, 1.10],      # Relaxed
-        'g' => [0.60, 1.05],      # Relaxed
-        'b' => [0.80, 1.50]       # Very relaxed for blue
-      },
-      crossover_thresholds: {
-        'rg_diff' => 0.20,        # Relaxed - DSLR scanning variations
-        'rb_diff' => 0.50,        # Very relaxed - blue channel issues expected
-        'gb_diff' => 0.45         # Very relaxed - blue channel issues expected
-      }
-    }
-  }.freeze
-
-  # Reference ratios from known good DSLR scans
-  DSLR_REFERENCE_RATIOS = {
-    'Consumer_Films' => {
-      # Based on Ultramax 400 good scan
-      ratios: {
-        gray_rg: { target: 1.09, tolerance: 0.25 },    # R/G in gray card ±25%
-        gray_rb: { target: 3.34, tolerance: 0.40 },    # R/B in gray card ±40% (blue varies)
-        gray_gb: { target: 3.08, tolerance: 0.40 },    # G/B in gray card ±40%
-        base_rg: { target: 0.89, tolerance: 0.20 },    # R/G in film base ±20%
-        base_rb: { target: 1.67, tolerance: 0.35 },    # R/B in film base ±35%
-        base_gb: { target: 1.87, tolerance: 0.35 },    # G/B in film base ±35%
-        # Development timing indicators (most important)
-        r_contrast: { target: 0.51, tolerance: 0.15 }, # Gray R / Base R ±15%
-        g_contrast: { target: 0.42, tolerance: 0.15 }, # Gray G / Base G ±15%
-        b_contrast: { target: 0.26, tolerance: 0.25 }  # Gray B / Base B ±25% (blue flexible)
-      }
-    },
-    'Professional_Films' => {
-      # Based on Portra baseline
-      ratios: {
-        gray_rg: { target: 1.30, tolerance: 0.25 },    
-        gray_rb: { target: 5.26, tolerance: 0.50 },    # Higher R/B ratio for pro films
-        gray_gb: { target: 4.05, tolerance: 0.50 },    
-        base_rg: { target: 0.93, tolerance: 0.20 },    
-        base_rb: { target: 1.54, tolerance: 0.35 },    
-        base_gb: { target: 1.65, tolerance: 0.35 },    
-        r_contrast: { target: 0.48, tolerance: 0.15 }, 
-        g_contrast: { target: 0.35, tolerance: 0.15 }, 
-        b_contrast: { target: 0.14, tolerance: 0.25 }  # Much lower for pro films
-      }
-    }
-  }.freeze
-
   attr_accessor :gray_card_data, :film_base_data, :film_stock, :ratio_profile
 
-  def initialize(ratio_profile = 'Consumer_Films')
+  def initialize(ratio_profile = 'Consumer_Films', config_path = File.join(__dir__, 'profiles.json'))
+    @ratio_profile = ratio_profile
+    load_config(config_path)
     @gray_card_data = nil
     @film_base_data = nil
-    @film_stock = 'DSLR_Flexible'
-    @ratio_profile = ratio_profile
+    @film_stock = 'DSLR_Flexible'.to_sym
+  end
+
+  def load_config(path)
+    unless File.exist?(path)
+      raise "Configuration file missing: #{path}. Please ensure profiles.json is in the root."
+    end
+    
+    config = JSON.parse(File.read(path), symbolize_names: true)
+    @density_profiles = config[:FILM_DENSITY_PROFILES]
+    @reference_ratios = config[:DSLR_REFERENCE_RATIOS]
   end
 
   def analyze_development(bit_depth = 14)
     raise 'Both gray card and film base measurements required' unless @gray_card_data && @film_base_data
-
+    
     bit_depth, reference_white = get_bit_depth_and_reference(bit_depth)
     
     # Traditional density analysis (relaxed for DSLR)
@@ -102,8 +60,6 @@ class IntegratedDSLRC41Validator
   end
 
   def analyze_from_single_csv(csv_file, ratio_profile = 'Consumer_Films', bit_depth = 14)
-    @ratio_profile = ratio_profile
-    
     puts "📊 Loading DSLR scan data: #{csv_file}"
     puts "🎯 Using ratio profile: #{ratio_profile}"
     
@@ -129,6 +85,7 @@ class IntegratedDSLRC41Validator
 
   private
 
+  
   def get_bit_depth_and_reference(bit_depth = 14)
     case bit_depth
     when 12
@@ -153,7 +110,7 @@ class IntegratedDSLRC41Validator
       'validation' => {},
       'notes' => []
     }
-
+    
     %w[r g b].each do |channel|
       gray_avg = @gray_card_data.send(channel).avg
       base_avg = @film_base_data.send(channel).avg
@@ -166,7 +123,7 @@ class IntegratedDSLRC41Validator
       density_results['film_base_densities'][channel] = base_density
 
       # Validate against relaxed DSLR profile
-      target_min, target_max = FILM_DENSITY_PROFILES[@film_stock][:gray_card_density][channel]
+      target_min, target_max = @density_profiles[@film_stock][:gray_card_density][channel.to_sym]
       in_range = (target_min..target_max).cover?(net_density)
       
       density_results['validation'][channel] = {
@@ -184,7 +141,6 @@ class IntegratedDSLRC41Validator
         end
       end
     end
-
     density_results
   end
 
@@ -214,7 +170,7 @@ class IntegratedDSLRC41Validator
     }
 
     # Compare against reference ratios
-    reference = DSLR_REFERENCE_RATIOS[@ratio_profile][:ratios]
+    reference = @reference_ratios[@ratio_profile.to_sym][:ratios]
     comparisons = {}
     issues = []
     critical_issues = []
@@ -379,46 +335,79 @@ class IntegratedDSLRC41Validator
     end
   end
 
-  def print_dslr_recommendations(results)
-    puts "\n" + "DSLR SCANNING RECOMMENDATIONS".center(80, '-')
+  def analyze_scan_health(reference_white)
+    health_report = {}
     
-    status = results['overall_status']
-    
-    case status.split(' - ')[0]
-    when 'CRITICAL'
-      puts "🚨 IMMEDIATE ACTION NEEDED:"
-      puts "• Check development time/temperature - ratios suggest timing issues"
-      puts "• Verify chemical activity and mixing ratios"
-      puts "• Consider test strip development to dial in timing"
+    %w[r g b].each do |channel|
+      base_avg = @film_base_data.send(channel).avg
+      gray_avg = @gray_card_data.send(channel).avg
       
-    when 'WARNING'  
-      puts "⚠️  MONITOR CLOSELY:"
-      puts "• Development parameters slightly off target"
-      puts "• Fine-tune time/temperature on next roll"
-      puts "• Check chemical age and activity"
+      # 1. Sensor Utilization (How much of the bit-depth is used by the brightest point)
+      utilization = (base_avg / reference_white.to_f) * 100
       
-    when 'MONITOR'
-      puts "📊 MINOR ADJUSTMENTS:"
-      puts "• Overall good but some parameters could be optimized"
-      puts "• Continue current process with minor tweaks"
+      # 2. Absolute Density (D-Min / Base Fog)
+      # This measures the "thickness" of the orange mask relative to the sensor max
+      abs_density = Math.log10(reference_white / base_avg)
       
-    when 'GOOD'
-      puts "✅ EXCELLENT DEVELOPMENT:"
-      puts "• Ratios indicate proper development timing"
-      puts "• Continue current process"
-    end
+      # 3. Dynamic Range used (in EV/Stops)
+      # How much of the sensor's latitude the negative occupies
+      range_ev = Math.log2(base_avg / gray_avg)
 
-    puts "\n🔵 BLUE CHANNEL NOTES:"
-    puts "• Blue variations are normal in DSLR scanning"
-    puts "• Focus on R/G balance and contrast ratios instead"
-    puts "• Blue density absolute values are less meaningful"
-    
-    puts "\n🎯 PRIORITIES FOR DSLR C-41:"
-    puts "1. Development timing (contrast ratios)"  
-    puts "2. Cross-channel balance (R/G ratios)"
-    puts "3. Consistent chemical activity"
-    puts "4. Blue channel absolute values (lowest priority)"
+      health_report[channel] = {
+        utilization: utilization,
+        abs_density: abs_density,
+        range_ev: range_ev,
+        status: interpret_utilization(utilization)
+      }
+    end
+    health_report
   end
+
+  def interpret_utilization(pct)
+    return { label: 'CLIPPING', icon: '🚫', color: :red } if pct > 95
+    return { label: 'OPTIMAL', icon: '💎', color: :green } if pct >= 70
+    return { label: 'ACCEPTABLE', icon: '⚠️', color: :yellow } if pct >= 40
+    { label: 'THIN SCAN (NOISY)', icon: '🌑', color: :red }
+  end
+
+  def print_dslr_recommendations(results)
+  puts "\n" + "📸 SCAN QUALITY & DENSITY TELEMETRY".center(80, '-')
+  
+  health = analyze_scan_health(results['reference_white'])
+  
+  puts "%-10s %-15s %-12s %-15s %-10s" % ["Channel", "Utilization", "Abs Density", "Range (EV)", "Status"]
+  puts "-" * 80
+  
+  %w[r g b].each do |ch|
+    h = health[ch]
+    puts "%-10s %-15s %-12.2f %-15.2f %-10s %s" % [
+      ch.upcase,
+      "#{h[:utilization].round(1)}%",
+      h[:abs_density],
+      h[:range_ev],
+      h[:status][:icon],
+      h[:status][:label]
+    ]
+  end
+
+  puts "\n💡 FIXING SCAN DENSITY:"
+  
+  # Logic for specific advice
+  max_util = health.values.map { |v| v[:utilization] }.max
+  
+  if max_util < 50
+    puts "👉 YOUR SCAN IS TOO DARK: You are wasting bit-depth."
+    puts "   Action: Increase exposure (slower shutter/wider aperture) until Red or Green hits ~85%."
+  elsif max_util > 95
+    puts "👉 SCAN IS CLIPPING: You are losing film base detail."
+    puts "   Action: Decrease exposure slightly. The film base must not hit the sensor ceiling."
+  else
+    puts "✅ EXPOSURE IS SOLID: You are maximizing the signal-to-noise ratio."
+  end
+
+  puts "\n🧪 DEVELOPMENT INSIGHTS:"
+  # (Your existing development logic here...)
+end
 
   # Helper methods for CSV parsing
   def parse_raw_digger_row(row)
@@ -529,7 +518,7 @@ def main
     abort("Error: CSV file required") if csv_file.nil?
     abort("❌ File not found: #{csv_file}") unless File.exist?(csv_file)
 
-    validator = IntegratedDSLRC41Validator.new(options[:profile])
+    validator = DensityCheck.new(options[:profile])
     validator.analyze_from_single_csv(csv_file, options[:profile], options[:bit_depth])
   else
     puts "DSLR C-41 Development Validator"
