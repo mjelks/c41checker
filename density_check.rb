@@ -16,7 +16,7 @@ class DensityCheck
   
   attr_accessor :gray_card_data, :film_base_data, :film_stock, :ratio_profile
 
-  def initialize(ratio_profile = 'Consumer_Films', config_path = 'profiles.json')
+  def initialize(ratio_profile = 'Consumer_Films', config_path = File.join(__dir__, 'profiles.json'))
     @ratio_profile = ratio_profile
     load_config(config_path)
     @gray_card_data = nil

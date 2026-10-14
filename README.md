@@ -11,3 +11,7 @@ The default behavior (inits) is using consumer films (think Kodak Gold/Ultramax)
 For professional film comparisons like Ektar / ProImage / Portra, use the `Professional_Films` flag
 
 `ruby density_check.rb samples/underdog-portra400-2025-08-21.csv --profile Professional_Films`
+
+Lastly, if for whatever reason we use 12, 14 (default), or 16 bit raws, that's an option as well
+
+`ruby density_check.rb samples/underdog-portra400-2025-08-21.csv --profile Professional_Films --bit-depth 12`
